@@ -10,11 +10,26 @@ interface StartSessionProps {
   ) => void;
 }
 
-const PRESETS = [
+interface DriverPreset {
+  label: string;
+  command: string;
+  args: string[];
+  dangerous?: boolean;
+  dangerWarning?: string;
+}
+
+const PRESETS: DriverPreset[] = [
+  { label: 'Bash', command: 'bash', args: [] },
   { label: 'Claude Code', command: 'claude', args: [] },
-  { label: 'Claude Code (skip permissions)', command: 'claude', args: ['--dangerously-skip-permissions'] },
   { label: 'Codex', command: 'codex', args: [] },
-  { label: 'Custom shell', command: 'bash', args: [] },
+  {
+    label: 'Claude Code (UNSAFE)',
+    command: 'claude',
+    args: ['--dangerously-skip-permissions'],
+    dangerous: true,
+    dangerWarning: 'This disables all Claude Code permission prompts. The agent will execute commands, edit files, and make changes without asking for confirmation. Only use this if you trust the agent and understand the risks.',
+  },
+  { label: 'Custom command', command: '', args: [] },
 ];
 
 export const StartSession: React.FC<StartSessionProps> = ({ onStart }) => {
@@ -23,16 +38,26 @@ export const StartSession: React.FC<StartSessionProps> = ({ onStart }) => {
   const [customCommand, setCustomCommand] = useState('');
   const [missionTitle, setMissionTitle] = useState('');
   const [missionIntent, setMissionIntent] = useState('');
+  const [dangerConfirmed, setDangerConfirmed] = useState(false);
+
+  const currentPreset = PRESETS[selectedPreset];
+  const isCustom = currentPreset.command === '';
+  const isDangerous = currentPreset.dangerous === true;
+  const canStart = repoPath && missionTitle && (!isDangerous || dangerConfirmed) && (!isCustom || customCommand);
+
+  const handlePresetSelect = (i: number) => {
+    setSelectedPreset(i);
+    setDangerConfirmed(false);
+  };
 
   const handleStart = () => {
-    if (!repoPath || !missionTitle) return;
-    const preset = PRESETS[selectedPreset];
-    const cmd = preset.command === 'bash' && customCommand
+    if (!canStart) return;
+    const cmd = isCustom && customCommand
       ? customCommand.split(' ')[0]
-      : preset.command;
-    const args = preset.command === 'bash' && customCommand
+      : currentPreset.command;
+    const args = isCustom && customCommand
       ? customCommand.split(' ').slice(1)
-      : preset.args;
+      : currentPreset.args;
 
     onStart(repoPath, cmd, args, missionTitle, missionIntent || missionTitle);
   };
@@ -65,14 +90,32 @@ export const StartSession: React.FC<StartSessionProps> = ({ onStart }) => {
                   style={{
                     ...styles.presetBtn,
                     ...(selectedPreset === i ? styles.presetBtnActive : {}),
+                    ...(preset.dangerous ? styles.presetBtnDanger : {}),
+                    ...(selectedPreset === i && preset.dangerous ? styles.presetBtnDangerActive : {}),
                   }}
-                  onClick={() => setSelectedPreset(i)}
+                  onClick={() => handlePresetSelect(i)}
                 >
                   {preset.label}
                 </button>
               ))}
             </div>
-            {selectedPreset === 3 && (
+
+            {isDangerous && currentPreset.dangerWarning && (
+              <div style={styles.dangerBox}>
+                <div style={styles.dangerTitle}>WARNING: Unsafe Mode</div>
+                <div style={styles.dangerText}>{currentPreset.dangerWarning}</div>
+                <label style={styles.dangerCheck}>
+                  <input
+                    type="checkbox"
+                    checked={dangerConfirmed}
+                    onChange={(e) => setDangerConfirmed(e.target.checked)}
+                  />
+                  <span>I understand the risks and want to proceed</span>
+                </label>
+              </div>
+            )}
+
+            {isCustom && (
               <input
                 style={{ ...styles.input, marginTop: '6px' }}
                 value={customCommand}
@@ -105,10 +148,10 @@ export const StartSession: React.FC<StartSessionProps> = ({ onStart }) => {
           <button
             style={{
               ...styles.startBtn,
-              opacity: (!repoPath || !missionTitle) ? 0.5 : 1,
+              opacity: canStart ? 1 : 0.5,
             }}
             onClick={handleStart}
-            disabled={!repoPath || !missionTitle}
+            disabled={!canStart}
           >
             START MISSION
           </button>
@@ -203,6 +246,42 @@ const styles: Record<string, React.CSSProperties> = {
     background: '#1f6feb',
     borderColor: '#1f6feb',
     color: '#fff',
+  },
+  presetBtnDanger: {
+    borderColor: '#6e3630',
+    color: '#ff7b72',
+  },
+  presetBtnDangerActive: {
+    background: '#6e3630',
+    borderColor: '#ff7b72',
+    color: '#fff',
+  },
+  dangerBox: {
+    marginTop: '8px',
+    padding: '12px',
+    background: '#1c1007',
+    border: '1px solid #6e3630',
+    borderRadius: '6px',
+  },
+  dangerTitle: {
+    fontSize: '12px',
+    fontWeight: 700,
+    color: '#ff7b72',
+    marginBottom: '6px',
+  },
+  dangerText: {
+    fontSize: '11px',
+    color: '#d29922',
+    lineHeight: '1.4',
+    marginBottom: '8px',
+  },
+  dangerCheck: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    fontSize: '11px',
+    color: '#c9d1d9',
+    cursor: 'pointer',
   },
   startBtn: {
     padding: '12px',

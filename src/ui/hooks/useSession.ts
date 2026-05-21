@@ -10,6 +10,7 @@ export function useSession() {
   const [events, setEvents] = useState<PitwallEventWS[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const eventListenersRef = useRef<Array<(event: PitwallEventWS) => void>>([]);
+  const authTokenRef = useRef<string>('');
 
   const createSession = useCallback(async (
     repoPath: string,
@@ -20,7 +21,10 @@ export function useSession() {
   ): Promise<SessionInfo> => {
     const res = await fetch(`${API_BASE}/sessions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authTokenRef.current}`,
+      },
       body: JSON.stringify({
         repoPath,
         driver: { command: driverCommand, args: driverArgs },
@@ -33,18 +37,42 @@ export function useSession() {
     return info;
   }, []);
 
+  const loadTimeline = useCallback(async (sessionId: string) => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/sessions/${sessionId}/timeline`,
+        { headers: { 'Authorization': `Bearer ${authTokenRef.current}` } }
+      );
+      const data = await res.json();
+      if (data.events && Array.isArray(data.events)) {
+        setEvents(data.events as PitwallEventWS[]);
+      }
+    } catch {
+      // timeline not available yet
+    }
+  }, []);
+
   const connectWs = useCallback((sessionId: string) => {
     if (wsRef.current) {
       wsRef.current.close();
     }
 
-    const ws = new WebSocket(`${WS_BASE}?sessionId=${sessionId}`);
+    // Load existing timeline events first
+    loadTimeline(sessionId);
+
+    const ws = new WebSocket(
+      `${WS_BASE}?sessionId=${sessionId}&token=${authTokenRef.current}`
+    );
     wsRef.current = ws;
 
     ws.onmessage = (msg) => {
       try {
         const event: PitwallEventWS = JSON.parse(msg.data);
-        setEvents(prev => [...prev.slice(-500), event]);
+        setEvents(prev => {
+          // Deduplicate by id
+          if (prev.some(e => e.id === event.id)) return prev;
+          return [...prev.slice(-500), event];
+        });
         for (const listener of eventListenersRef.current) {
           listener(event);
         }
@@ -54,18 +82,22 @@ export function useSession() {
     };
 
     ws.onclose = () => {
-      // Reconnect after a delay
       setTimeout(() => {
         if (session?.sessionId === sessionId) {
           connectWs(sessionId);
         }
       }, 2000);
     };
-  }, [session]);
+  }, [session, loadTimeline]);
+
+  const authHeaders = useCallback(() => ({
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${authTokenRef.current}`,
+  }), []);
 
   const sendTerminalInput = useCallback((data: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'terminal.input', data, source: 'human' }));
+      wsRef.current.send(JSON.stringify({ type: 'terminal.input', data }));
     }
   }, []);
 
@@ -78,7 +110,10 @@ export function useSession() {
   const fetchState = useCallback(async () => {
     if (!session) return;
     try {
-      const res = await fetch(`${API_BASE}/sessions/${session.sessionId}/state`);
+      const res = await fetch(
+        `${API_BASE}/sessions/${session.sessionId}/state`,
+        { headers: { 'Authorization': `Bearer ${authTokenRef.current}` } }
+      );
       const data = await res.json();
       setState(data);
     } catch {
@@ -90,27 +125,42 @@ export function useSession() {
     if (!session) return 'No active session';
     const res = await fetch(`${API_BASE}/sessions/${session.sessionId}/radio/ask`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ message }),
     });
     const data = await res.json();
     return data.response;
-  }, [session]);
+  }, [session, authHeaders]);
 
   const sendToDriver = useCallback(async (instruction: string): Promise<string> => {
     if (!session) return 'No active session';
     const res = await fetch(`${API_BASE}/sessions/${session.sessionId}/radio/send-to-driver`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ instruction }),
     });
     const data = await res.json();
     return data.sent;
-  }, [session]);
+  }, [session, authHeaders]);
 
   const interrupt = useCallback(async () => {
     if (!session) return;
-    await fetch(`${API_BASE}/sessions/${session.sessionId}/interrupt`, { method: 'POST' });
+    await fetch(`${API_BASE}/sessions/${session.sessionId}/interrupt`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${authTokenRef.current}` },
+    });
+  }, [session]);
+
+  const updateLanes = useCallback(async () => {
+    if (!session) return;
+    try {
+      await fetch(`${API_BASE}/sessions/${session.sessionId}/lanes`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${authTokenRef.current}` },
+      });
+    } catch {
+      // ignore
+    }
   }, [session]);
 
   const onEvent = useCallback((listener: (event: PitwallEventWS) => void) => {
@@ -118,6 +168,10 @@ export function useSession() {
     return () => {
       eventListenersRef.current = eventListenersRef.current.filter(l => l !== listener);
     };
+  }, []);
+
+  const setAuthToken = useCallback((token: string) => {
+    authTokenRef.current = token;
   }, []);
 
   // Poll state every 3 seconds when session is active
@@ -146,6 +200,8 @@ export function useSession() {
     askEngineer,
     sendToDriver,
     interrupt,
+    updateLanes,
     onEvent,
+    setAuthToken,
   };
 }

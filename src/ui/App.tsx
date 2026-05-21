@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useSession } from './hooks/useSession';
 import { TerminalVisor } from './components/TerminalVisor';
 import { RaceRadio } from './components/RaceRadio';
@@ -22,10 +22,35 @@ export const App: React.FC = () => {
     askEngineer,
     sendToDriver,
     interrupt,
+    updateLanes,
     onEvent,
+    setAuthToken,
   } = useSession();
 
   const [activeTab, setActiveTab] = useState<Tab>('visor');
+  const [authReady, setAuthReady] = useState(false);
+
+  // Fetch auth token on mount
+  useEffect(() => {
+    async function fetchToken() {
+      try {
+        // In Electron, use IPC; in dev (Vite), fetch from server
+        const w = window as unknown as { pitwall?: { getAuthToken: () => Promise<string> } };
+        if (w.pitwall?.getAuthToken) {
+          const token = await w.pitwall.getAuthToken();
+          setAuthToken(token);
+        } else {
+          const res = await fetch('http://localhost:4850/auth/token');
+          const data = await res.json();
+          setAuthToken(data.token);
+        }
+      } catch {
+        // Server may not be running yet
+      }
+      setAuthReady(true);
+    }
+    fetchToken();
+  }, [setAuthToken]);
 
   const handleStart = useCallback(async (
     repoPath: string,
@@ -37,6 +62,10 @@ export const App: React.FC = () => {
     const info = await createSession(repoPath, command, args, title, intent);
     connectWs(info.sessionId);
   }, [createSession, connectWs]);
+
+  if (!authReady) {
+    return <div style={{ background: '#0a0a0f', color: '#8b949e', display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', fontFamily: 'monospace' }}>Connecting to Pitwall server...</div>;
+  }
 
   if (!session) {
     return <StartSession onStart={handleStart} />;
@@ -119,7 +148,7 @@ export const App: React.FC = () => {
           <Timeline events={events} />
         </div>
         <div style={styles.fleetStrip}>
-          <FleetLanes observations={state?.laneObservations || []} />
+          <FleetLanes observations={state?.laneObservations || []} onRefresh={updateLanes} />
         </div>
       </div>
     </div>

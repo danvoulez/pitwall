@@ -26,7 +26,7 @@ export class GitMonitor {
   }
 
   async getDiffSnapshot(): Promise<GitDiffSnapshot> {
-    const diff = await this.git.diffSummary();
+    const diff = await this.git.diffSummary(['HEAD']);
     const files = diff.files.map((f) => {
       const textFile = f as DiffResultTextFile;
       return {
@@ -48,7 +48,7 @@ export class GitMonitor {
 
   async getDiffStat(): Promise<string> {
     try {
-      const result = await this.git.diff(['--stat']);
+      const result = await this.git.diff(['HEAD', '--stat']);
       return result;
     } catch {
       return '';
@@ -57,7 +57,7 @@ export class GitMonitor {
 
   async getDiffPreview(maxLength: number = 5000): Promise<string> {
     try {
-      const result = await this.git.diff();
+      const result = await this.git.diff(['HEAD']);
       if (result.length > maxLength) {
         return result.substring(0, maxLength) + '\n... (truncated)';
       }

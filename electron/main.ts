@@ -3,6 +3,7 @@ import path from 'path';
 import { startServer } from './server';
 
 let mainWindow: BrowserWindow | null = null;
+let serverInfo: { port: number; authToken: string } | null = null;
 
 const isDev = !app.isPackaged;
 
@@ -33,7 +34,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(async () => {
-  await startServer();
+  serverInfo = await startServer();
   createWindow();
 });
 
@@ -48,5 +49,9 @@ app.on('activate', () => {
 });
 
 ipcMain.handle('get-server-port', () => {
-  return 4850;
+  return serverInfo?.port || 4850;
+});
+
+ipcMain.handle('get-auth-token', () => {
+  return serverInfo?.authToken || '';
 });

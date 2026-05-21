@@ -1,13 +1,18 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import http from 'http';
+import crypto from 'crypto';
+import { v4 as uuidv4 } from 'uuid';
 import { SessionManager } from '../src/core/session/SessionManager';
 import { LLMAdapter } from '../src/core/engineer/RaceEngineer';
 import { PitwallEvent } from '../src/core/events/types';
 
 const sessions = new Map<string, SessionManager>();
 
-// Stub LLM adapter — users configure their own key
+// Per-process auth token — prevents drive-by browser access
+const AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
+
+// Stub LLM adapter — users configure their own API key
 class StubLLMAdapter implements LLMAdapter {
   async chat(messages: Array<{ role: string; content: string }>): Promise<string> {
     const lastUser = messages.filter(m => m.role === 'user').pop();
@@ -17,7 +22,6 @@ class StubLLMAdapter implements LLMAdapter {
       return 'Race Engineer standing by. No mission context available yet.';
     }
 
-    // Parse mission context for smart stub responses
     const context = systemContext.content;
     const changedMatch = context.match(/CHANGED FILES: (.+)/);
     const testMatch = context.match(/TEST RESULTS: (.+)/);
@@ -34,66 +38,125 @@ class StubLLMAdapter implements LLMAdapter {
       return `---\nOperator instruction:\n\n${instruction}\n\nFocus on this specific task. Report results before proceeding to anything else.\n---`;
     }
 
-    return `📡 Race Engineer report:
+    return `Race Engineer report (stub):
 
-**Status**: ${status}
-**Changed files**: ${changedFiles}
-**Tests**: ${testResults}
-**Claims**: ${claims}
+Status: ${status}
+Changed files: ${changedFiles}
+Tests: ${testResults}
+Claims: ${claims}
 
 ${changedFiles !== 'none' && testResults === 'none'
-  ? '⚠️ Files modified but no test evidence yet. Recommend running targeted tests before claiming completion.'
+  ? 'Warning: Files modified but no test evidence yet. Recommend running targeted tests before claiming completion.'
   : testResults.includes('failed')
-    ? '🔴 Tests failing. Driver should focus on fixing the failing tests before proceeding.'
+    ? 'Tests failing. Driver should focus on fixing the failing tests before proceeding.'
     : testResults.includes('passed')
-      ? '✅ Evidence captured via passing tests. Review diff before committing.'
+      ? 'Evidence captured via passing tests. Review diff before committing.'
       : 'Observing. No significant activity detected yet.'}
 
-_Configure LLM API key in Settings for full Race Engineer capabilities._`;
+[Stub LLM — configure API key for full Race Engineer]`;
   }
 }
 
-export async function startServer(): Promise<void> {
+function authMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token || token !== AUTH_TOKEN) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
+}
+
+const WS_MESSAGE_TYPES = ['terminal.input', 'terminal.resize'] as const;
+type WSMessageType = typeof WS_MESSAGE_TYPES[number];
+
+function isValidWSMessage(msg: unknown): msg is { type: WSMessageType; [key: string]: unknown } {
+  if (typeof msg !== 'object' || msg === null) return false;
+  const obj = msg as Record<string, unknown>;
+  if (typeof obj.type !== 'string') return false;
+  return (WS_MESSAGE_TYPES as readonly string[]).includes(obj.type);
+}
+
+export async function startServer(): Promise<{ port: number; authToken: string }> {
   const app_server = express();
-  app_server.use(express.json());
+  app_server.use(express.json({ limit: '1mb' }));
+
+  // CORS for local access only
+  app_server.use((_req, res, next) => {
+    res.header('Access-Control-Allow-Origin', 'http://localhost:5173');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    if (_req.method === 'OPTIONS') {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
+
+  // Auth token endpoint — only accessible from Electron preload
+  app_server.get('/auth/token', (_req, res) => {
+    // In production, this should verify the request comes from Electron
+    res.json({ token: AUTH_TOKEN });
+  });
+
+  // Protect all /sessions routes
+  app_server.use('/sessions', authMiddleware);
 
   const server = http.createServer(app_server);
   const wss = new WebSocketServer({ server, path: '/ws' });
 
-  // WebSocket for real-time events
   const wsClients = new Map<string, Set<WebSocket>>();
 
   wss.on('connection', (ws, req) => {
     const url = new URL(req.url || '/', `http://localhost`);
     const sessionId = url.searchParams.get('sessionId');
+    const token = url.searchParams.get('token');
 
-    if (sessionId) {
-      if (!wsClients.has(sessionId)) {
-        wsClients.set(sessionId, new Set());
-      }
-      wsClients.get(sessionId)!.add(ws);
-
-      ws.on('close', () => {
-        wsClients.get(sessionId)?.delete(ws);
-      });
-
-      // Handle terminal input from WebSocket
-      ws.on('message', (data) => {
-        try {
-          const msg = JSON.parse(data.toString());
-          const session = sessions.get(sessionId);
-          if (!session) return;
-
-          if (msg.type === 'terminal.input') {
-            session.writeToTerminal(msg.data, msg.source || 'human');
-          } else if (msg.type === 'terminal.resize') {
-            session.resizeTerminal(msg.cols, msg.rows);
-          }
-        } catch {
-          // ignore malformed messages
-        }
-      });
+    // Validate auth token on WebSocket connection
+    if (!token || token !== AUTH_TOKEN) {
+      ws.close(4001, 'Unauthorized');
+      return;
     }
+
+    if (!sessionId) {
+      ws.close(4002, 'Missing sessionId');
+      return;
+    }
+
+    if (!wsClients.has(sessionId)) {
+      wsClients.set(sessionId, new Set());
+    }
+    wsClients.get(sessionId)!.add(ws);
+
+    ws.on('close', () => {
+      wsClients.get(sessionId)?.delete(ws);
+    });
+
+    ws.on('message', (data) => {
+      try {
+        const raw = data.toString();
+        if (raw.length > 65536) return;
+
+        const msg = JSON.parse(raw);
+        if (!isValidWSMessage(msg)) return;
+
+        const session = sessions.get(sessionId);
+        if (!session) return;
+
+        if (msg.type === 'terminal.input') {
+          if (typeof msg.data !== 'string') return;
+          // Do not trust client-provided source — always 'human' from WS
+          session.writeToTerminal(msg.data, 'human');
+        } else if (msg.type === 'terminal.resize') {
+          if (typeof msg.cols !== 'number' || typeof msg.rows !== 'number') return;
+          if (msg.cols < 1 || msg.cols > 1000 || msg.rows < 1 || msg.rows > 500) return;
+          session.resizeTerminal(msg.cols, msg.rows);
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    });
   });
 
   function broadcastToSession(sessionId: string, event: PitwallEvent): void {
@@ -127,7 +190,7 @@ export async function startServer(): Promise<void> {
           env: driver.env,
         },
         mission: {
-          id: mission.id || require('uuid').v4(),
+          id: mission.id || uuidv4(),
           title: mission.title,
           intent: mission.intent,
         },
@@ -137,7 +200,6 @@ export async function startServer(): Promise<void> {
 
     sessions.set(session.id, session);
 
-    // Wire events to WebSocket
     session.onEvent((event) => {
       broadcastToSession(session.id, event);
     });
@@ -158,8 +220,9 @@ export async function startServer(): Promise<void> {
       return;
     }
 
-    const { text, source } = req.body;
-    session.writeToTerminal(text, source || 'human');
+    const { text } = req.body;
+    // Source is always 'human' from the API — not client-trusted
+    session.writeToTerminal(text, 'human');
     res.json({ ok: true });
   });
 
@@ -175,7 +238,7 @@ export async function startServer(): Promise<void> {
       const { message } = req.body;
       const response = await session.askEngineer(message);
       res.json({ response });
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Engineer error' });
     }
   });
@@ -192,7 +255,7 @@ export async function startServer(): Promise<void> {
       const { instruction } = req.body;
       const formatted = await session.sendToDriver(instruction);
       res.json({ sent: formatted });
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to send instruction' });
     }
   });
@@ -208,7 +271,7 @@ export async function startServer(): Promise<void> {
     try {
       const state = await session.getFullState();
       res.json(state);
-    } catch (err) {
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to get state' });
     }
   });
@@ -221,8 +284,8 @@ export async function startServer(): Promise<void> {
       return;
     }
 
-    const timeline = session.getTimeline();
-    res.json({ events: timeline });
+    const events = session.getTimeline();
+    res.json({ events });
   });
 
   // POST /sessions/:id/interrupt
@@ -245,8 +308,8 @@ export async function startServer(): Promise<void> {
       return;
     }
 
-    const snapshot = await session.snapshot();
-    res.json(snapshot);
+    const snapshotPath = await session.snapshot();
+    res.json({ path: snapshotPath });
   });
 
   // POST /sessions/:id/lanes
@@ -258,9 +321,10 @@ export async function startServer(): Promise<void> {
     }
 
     try {
-      const observations = await session.updateLanes();
-      res.json({ observations });
-    } catch (err) {
+      await session.updateLanes();
+      const state = await session.getFullState();
+      res.json({ laneObservations: state.laneObservations });
+    } catch (_err) {
       res.status(500).json({ error: 'Failed to update lanes' });
     }
   });
@@ -287,7 +351,11 @@ export async function startServer(): Promise<void> {
     res.json({ sessions: list });
   });
 
-  server.listen(4850, () => {
-    console.log('Pitwall server running on port 4850');
+  const PORT = 4850;
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`Pitwall server running on http://127.0.0.1:${PORT}`);
+    console.log(`Auth token: ${AUTH_TOKEN}`);
   });
+
+  return { port: PORT, authToken: AUTH_TOKEN };
 }

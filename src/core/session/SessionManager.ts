@@ -73,8 +73,13 @@ export class SessionManager {
       if (event.type === 'pty.output') {
         this.commandDetector.feed(event.data);
         this.testDetector.feed(event.data);
-        // Detect claims from driver output
-        this.claimManager.detectClaims(event.data, 'driver', this.id);
+        // Detect claims from driver output — emit as events
+        const { events: claimEvents } = this.claimManager.detectClaims(
+          event.data, 'driver', this.id, event.id
+        );
+        for (const ce of claimEvents) {
+          this.recordEvent(ce);
+        }
       }
     });
 

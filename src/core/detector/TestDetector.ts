@@ -5,7 +5,6 @@ type TestFramework = 'jest' | 'vitest' | 'pytest' | 'go test' | 'cargo test' | '
 
 interface TestPattern {
   framework: TestFramework;
-  commandPattern?: RegExp;
   passPatterns: RegExp[];
   failPatterns: RegExp[];
 }
@@ -13,78 +12,61 @@ interface TestPattern {
 const TEST_PATTERNS: TestPattern[] = [
   {
     framework: 'jest',
-    commandPattern: /jest|npx jest|pnpm test|npm test|yarn test/,
     passPatterns: [
       /Tests:\s+\d+ passed/,
       /Test Suites:\s+\d+ passed/,
-      /PASS\s+\S+/,
+      /PASS\s+\S+\.(?:test|spec)\.\w+/,
     ],
     failPatterns: [
       /Tests:\s+\d+ failed/,
       /Test Suites:\s+\d+ failed/,
-      /FAIL\s+\S+/,
+      /FAIL\s+\S+\.(?:test|spec)\.\w+/,
     ],
   },
   {
     framework: 'vitest',
-    commandPattern: /vitest|npx vitest/,
     passPatterns: [
       /Tests\s+\d+ passed/,
-      /✓|√/,
+      /\d+ tests? passed/,
     ],
     failPatterns: [
       /Tests\s+\d+ failed/,
-      /✗|×|FAIL/,
+      /\d+ tests? failed/,
     ],
   },
   {
     framework: 'pytest',
-    commandPattern: /pytest|python -m pytest/,
     passPatterns: [
-      /\d+ passed/,
-      /PASSED/,
+      /=+ \d+ passed/,
+      /\d+ passed in [\d.]+s/,
     ],
     failPatterns: [
-      /\d+ failed/,
-      /FAILED/,
-      /ERRORS/,
+      /=+ \d+ failed/,
+      /FAILED\s+\S+::\S+/,
+      /[1-9]\d* failed,?\s+/,
     ],
   },
   {
     framework: 'go test',
-    commandPattern: /go test/,
-    passPatterns: [/^ok\s+/m, /PASS/],
-    failPatterns: [/^FAIL\s+/m, /--- FAIL/],
+    passPatterns: [/^ok\s+\S+\s+[\d.]+s/m],
+    failPatterns: [/^FAIL\s+\S+/m, /--- FAIL:\s+\S+/],
   },
   {
     framework: 'cargo test',
-    commandPattern: /cargo test/,
-    passPatterns: [/test result: ok/],
-    failPatterns: [/test result: FAILED/, /failures:/],
+    passPatterns: [/test result: ok\.\s+\d+ passed/],
+    failPatterns: [/test result: FAILED/],
   },
 ];
 
-const GENERIC_FAIL_PATTERNS = [
-  /Error:/i,
-  /Traceback \(most recent call last\)/,
-  /AssertionError/,
-  /AssertError/,
-  /FAIL/,
-  /failed/,
-  /panic:/,
-];
-
-const GENERIC_PASS_PATTERNS = [
-  /All tests passed/i,
-  /PASS/,
-  /passed/,
-  /✓ All/,
-];
+const TEST_COMMAND_PATTERN = /(?:npm|pnpm|yarn|npx)\s+(?:test|vitest|jest)|pytest|go\s+test|cargo\s+test|vitest|jest/;
 
 export class TestDetector {
   private sessionId: string;
   private buffer: string = '';
   private onTest: ((event: TestDetectedEvent) => void) | null = null;
+  private testCommandActive = false;
+  private lastTestCommandTime = 0;
+  private testCommandWindowMs = 60000;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -94,28 +76,38 @@ export class TestDetector {
     this.onTest = handler;
   }
 
+  markTestCommandActive(): void {
+    this.testCommandActive = true;
+    this.lastTestCommandTime = Date.now();
+  }
+
+  isTestActive(): boolean {
+    if (!this.testCommandActive) return false;
+    if (Date.now() - this.lastTestCommandTime > this.testCommandWindowMs) {
+      this.testCommandActive = false;
+      return false;
+    }
+    return true;
+  }
+
   feed(data: string): TestDetectedEvent[] {
     this.buffer += data;
     const events: TestDetectedEvent[] = [];
 
-    // Keep last ~4000 chars to detect multi-line test output
     if (this.buffer.length > 8000) {
       this.buffer = this.buffer.slice(-4000);
     }
 
     const stripped = this.buffer.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
 
+    // Check if this chunk contains a test command invocation
+    if (TEST_COMMAND_PATTERN.test(stripped)) {
+      this.markTestCommandActive();
+    }
+
+    // Framework-specific patterns — check pass before fail to avoid false negatives
+    // when summary lines contain both "passed" and "failed" counts
     for (const tp of TEST_PATTERNS) {
-      for (const pattern of tp.failPatterns) {
-        const match = stripped.match(pattern);
-        if (match) {
-          const event = this.createEvent(tp.framework, 'failed', match[0]);
-          events.push(event);
-          this.onTest?.(event);
-          this.buffer = '';
-          return events;
-        }
-      }
       for (const pattern of tp.passPatterns) {
         const match = stripped.match(pattern);
         if (match) {
@@ -126,27 +118,10 @@ export class TestDetector {
           return events;
         }
       }
-    }
-
-    // Generic detection
-    for (const pattern of GENERIC_FAIL_PATTERNS) {
-      if (pattern.test(stripped)) {
+      for (const pattern of tp.failPatterns) {
         const match = stripped.match(pattern);
         if (match) {
-          const event = this.createEvent('unknown', 'failed', match[0]);
-          events.push(event);
-          this.onTest?.(event);
-          this.buffer = '';
-          return events;
-        }
-      }
-    }
-
-    for (const pattern of GENERIC_PASS_PATTERNS) {
-      if (pattern.test(stripped)) {
-        const match = stripped.match(pattern);
-        if (match) {
-          const event = this.createEvent('unknown', 'passed', match[0]);
+          const event = this.createEvent(tp.framework, 'failed', match[0]);
           events.push(event);
           this.onTest?.(event);
           this.buffer = '';

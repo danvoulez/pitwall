@@ -3,6 +3,7 @@ import { CommandDetectedEvent } from '../events/types';
 
 const COMMAND_PATTERNS: Array<{ pattern: RegExp; confidence: 'low' | 'medium' | 'high' }> = [
   { pattern: /^\$ (.+)$/m, confidence: 'high' },
+  { pattern: /^% (.+)$/m, confidence: 'high' },
   { pattern: /^> (.+)$/m, confidence: 'medium' },
   { pattern: /^❯ (.+)$/m, confidence: 'high' },
   { pattern: /^➜ .+ (.+)$/m, confidence: 'medium' },

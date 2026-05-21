@@ -8,8 +8,10 @@ export type Claim = {
     | 'evidence_captured'
     | 'verified'
     | 'failed'
+    | 'contradicted'
     | 'inconclusive';
   supportingEvents: string[];
   requiredEvidence?: string[];
   createdAt: string;
+  createdAtEventId?: string;
 };

@@ -9,6 +9,7 @@ interface LaneObservation {
 
 interface FleetLanesProps {
   observations: LaneObservation[];
+  onRefresh?: () => void;
 }
 
 const LANE_INFO: Record<string, { label: string; icon: string; color: string }> = {
@@ -25,10 +26,15 @@ const STATUS_COLORS: Record<string, string> = {
   blocked: '#ff7b72',
 };
 
-export const FleetLanes: React.FC<FleetLanesProps> = ({ observations }) => {
+export const FleetLanes: React.FC<FleetLanesProps> = ({ observations, onRefresh }) => {
   return (
     <div style={styles.container}>
-      <div style={styles.header}>FLEET LANES</div>
+      <div style={styles.header}>
+        <span>FLEET LANES</span>
+        {onRefresh && (
+          <button onClick={onRefresh} style={styles.refreshBtn}>Refresh</button>
+        )}
+      </div>
       <div style={styles.lanes}>
         {observations.map((obs) => {
           const info = LANE_INFO[obs.lane] || { label: obs.lane, icon: '●', color: '#8b949e' };
@@ -66,6 +72,9 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
   },
   header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     padding: '6px 12px',
     fontSize: '11px',
     fontWeight: 700,
@@ -73,6 +82,16 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#bc8cff',
     borderBottom: '1px solid #21262d',
     background: '#161b22',
+  },
+  refreshBtn: {
+    padding: '2px 8px',
+    fontSize: '9px',
+    border: '1px solid #30363d',
+    borderRadius: '4px',
+    background: 'transparent',
+    color: '#8b949e',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
   },
   lanes: {
     display: 'flex',
