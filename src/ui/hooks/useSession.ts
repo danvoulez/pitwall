@@ -11,6 +11,7 @@ export function useSession() {
   const wsRef = useRef<WebSocket | null>(null);
   const eventListenersRef = useRef<Array<(event: PitwallEventWS) => void>>([]);
   const authTokenRef = useRef<string>('');
+  const activeSessionIdRef = useRef<string | null>(null);
 
   const createSession = useCallback(async (
     repoPath: string,
@@ -57,6 +58,8 @@ export function useSession() {
       wsRef.current.close();
     }
 
+    activeSessionIdRef.current = sessionId;
+
     // Load existing timeline events first
     loadTimeline(sessionId);
 
@@ -83,12 +86,13 @@ export function useSession() {
 
     ws.onclose = () => {
       setTimeout(() => {
-        if (session?.sessionId === sessionId) {
+        // Use ref to avoid stale closure — reconnect only if still same session
+        if (activeSessionIdRef.current === sessionId) {
           connectWs(sessionId);
         }
       }, 2000);
     };
-  }, [session, loadTimeline]);
+  }, [loadTimeline]);
 
   const authHeaders = useCallback(() => ({
     'Content-Type': 'application/json',

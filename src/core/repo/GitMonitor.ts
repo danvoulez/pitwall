@@ -26,7 +26,11 @@ export class GitMonitor {
   }
 
   async getDiffSnapshot(): Promise<GitDiffSnapshot> {
-    const diff = await this.git.diffSummary(['HEAD']);
+    const log = await this.git.log({ maxCount: 1 }).catch(() => ({ total: 0 }));
+    const diff = await (log.total
+      ? this.git.diffSummary(['HEAD'])
+      : this.git.diffSummary(['--cached'])
+    ).catch(() => ({ files: [] as DiffResultTextFile[] }));
     const files = diff.files.map((f) => {
       const textFile = f as DiffResultTextFile;
       return {
@@ -48,8 +52,14 @@ export class GitMonitor {
 
   async getDiffStat(): Promise<string> {
     try {
-      const result = await this.git.diff(['HEAD', '--stat']);
-      return result;
+      // Check if there are any commits first
+      const log = await this.git.log({ maxCount: 1 });
+      if (!log.total) {
+        // No commits yet — diff against empty tree
+        const result = await this.git.diff(['--cached', '--stat']);
+        return result || await this.git.raw(['diff', '--stat']);
+      }
+      return await this.git.diff(['HEAD', '--stat']);
     } catch {
       return '';
     }
@@ -57,7 +67,10 @@ export class GitMonitor {
 
   async getDiffPreview(maxLength: number = 5000): Promise<string> {
     try {
-      const result = await this.git.diff(['HEAD']);
+      const log = await this.git.log({ maxCount: 1 });
+      const result = log.total
+        ? await this.git.diff(['HEAD'])
+        : await this.git.diff(['--cached']);
       if (result.length > maxLength) {
         return result.substring(0, maxLength) + '\n... (truncated)';
       }

@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid';
 import path from 'path';
 import os from 'os';
+import fs from 'fs';
 import { SessionConfig, SessionState } from './types';
 import { PitwallEvent } from '../events/types';
 import { EventLedger } from '../events/EventLedger';
@@ -13,7 +14,7 @@ import { ClaimManager } from '../claims/ClaimManager';
 import { GateManager } from '../gates/GateManager';
 import { RaceEngineer, LLMAdapter } from '../engineer/RaceEngineer';
 import { ShadowLanes } from '../lanes/ShadowLanes';
-import { MissionPacket } from '../engineer/types';
+import { MissionPacket, Risk } from '../engineer/types';
 import { Claim } from '../claims/types';
 import { Gate } from '../gates/types';
 import { LaneObservation } from '../lanes/types';
@@ -201,16 +202,21 @@ export class SessionManager {
     session: SessionState;
     changedFiles: string[];
     diffStat: string;
+    diffPreview: string;
     claims: Claim[];
     gates: Gate[];
     laneObservations: LaneObservation[];
     recentEvents: PitwallEvent[];
   }> {
-    const diffStat = await this.gitMonitor.getDiffStat();
+    const [diffStat, diffPreview] = await Promise.all([
+      this.gitMonitor.getDiffStat(),
+      this.gitMonitor.getDiffPreview(8000),
+    ]);
     return {
       session: this.state,
       changedFiles: Array.from(this.changedFiles),
       diffStat,
+      diffPreview,
       claims: this.claimManager.getClaims(),
       gates: this.gateManager.getGates(),
       laneObservations: this.shadowLanes.getObservations(),
@@ -221,6 +227,21 @@ export class SessionManager {
   async buildMissionPacket(): Promise<MissionPacket> {
     const diffStat = await this.gitMonitor.getDiffStat();
     const diffPreview = await this.gitMonitor.getDiffPreview();
+
+    // Extract structured risks from risk_monitor lane observation
+    const riskObs = this.shadowLanes.getObservations().find(o => o.lane === 'risk_monitor');
+    const risks: Risk[] = riskObs?.status === 'warning' && riskObs.summary
+      ? riskObs.summary
+          .split('\n')
+          .filter(line => line.trim().length > 10)
+          .slice(0, 5)
+          .map((line, i) => ({
+            id: `risk-${i}`,
+            level: 'medium' as const,
+            description: line.trim(),
+            relatedEvents: riskObs.relatedEvents,
+          }))
+      : [];
 
     return {
       mission: {
@@ -246,7 +267,7 @@ export class SessionManager {
         recentResults: this.recentTestResults,
       },
       claims: this.claimManager.getClaims(),
-      risks: [],
+      risks,
       openQuestions: [],
     };
   }
@@ -264,14 +285,20 @@ export class SessionManager {
     };
   }
 
-  // Snapshot
-  async snapshot(): Promise<object> {
+  // Snapshot — writes JSON to ~/.pitwall/sessions/{id}/snapshots/{ts}.json
+  async snapshot(): Promise<string> {
     const state = await this.getFullState();
-    return {
+    const data = {
       ...state,
       scrollback: this.ptyBroker.getScrollback(500),
       timestamp: new Date().toISOString(),
     };
+    const snapshotDir = path.join(os.homedir(), '.pitwall', 'sessions', this.id, 'snapshots');
+    fs.mkdirSync(snapshotDir, { recursive: true });
+    const filename = `snapshot-${Date.now()}.json`;
+    const filepath = path.join(snapshotDir, filename);
+    fs.writeFileSync(filepath, JSON.stringify(data, null, 2));
+    return filepath;
   }
 
   stop(): void {

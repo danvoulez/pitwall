@@ -17,6 +17,7 @@ export type SessionState = {
   };
   changedFiles: string[];
   diffStat: string;
+  diffPreview: string;
   claims: Array<{
     id: string;
     text: string;
