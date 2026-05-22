@@ -4,58 +4,18 @@ import http from 'http';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { SessionManager } from '../src/core/session/SessionManager';
-import { LLMAdapter } from '../src/core/engineer/RaceEngineer';
 import { PitwallEvent } from '../src/core/events/types';
+import { autoDetectLLM, createLLMAdapter, LLMProvider } from '../src/core/llm/index';
 
 const sessions = new Map<string, SessionManager>();
 
 // Per-process auth token — prevents drive-by browser access
 const AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
 
-// Stub LLM adapter — users configure their own API key
-class StubLLMAdapter implements LLMAdapter {
-  async chat(messages: Array<{ role: string; content: string }>): Promise<string> {
-    const lastUser = messages.filter(m => m.role === 'user').pop();
-    const systemContext = messages.find(m => m.role === 'system' && m.content.includes('MISSION'));
-
-    if (!systemContext) {
-      return 'Race Engineer standing by. No mission context available yet.';
-    }
-
-    const context = systemContext.content;
-    const changedMatch = context.match(/CHANGED FILES: (.+)/);
-    const testMatch = context.match(/TEST RESULTS: (.+)/);
-    const claimsMatch = context.match(/CLAIMS:\n([\s\S]*?)(?:\n\n|RISKS)/);
-    const statusMatch = context.match(/STATUS: (\w+)/);
-
-    const changedFiles = changedMatch?.[1] || 'none';
-    const testResults = testMatch?.[1] || 'none';
-    const claims = claimsMatch?.[1] || 'none';
-    const status = statusMatch?.[1] || 'unknown';
-
-    if (lastUser?.content.includes('Translate it into a clear')) {
-      const instruction = lastUser.content.match(/"(.+)"/)?.[1] || lastUser.content;
-      return `---\nOperator instruction:\n\n${instruction}\n\nFocus on this specific task. Report results before proceeding to anything else.\n---`;
-    }
-
-    return `Race Engineer report (stub):
-
-Status: ${status}
-Changed files: ${changedFiles}
-Tests: ${testResults}
-Claims: ${claims}
-
-${changedFiles !== 'none' && testResults === 'none'
-  ? 'Warning: Files modified but no test evidence yet. Recommend running targeted tests before claiming completion.'
-  : testResults.includes('failed')
-    ? 'Tests failing. Driver should focus on fixing the failing tests before proceeding.'
-    : testResults.includes('passed')
-      ? 'Evidence captured via passing tests. Review diff before committing.'
-      : 'Observing. No significant activity detected yet.'}
-
-[Stub LLM — configure API key for full Race Engineer]`;
-  }
-}
+// Auto-detect LLM from environment
+const detected = autoDetectLLM();
+const llmState = { adapter: detected.adapter, provider: detected.provider };
+console.log(`LLM provider: ${llmState.provider}`);
 
 function authMiddleware(req: Request, res: Response, next: NextFunction): void {
   const authHeader = req.headers.authorization;
@@ -98,6 +58,26 @@ export async function startServer(): Promise<{ port: number; authToken: string }
   app_server.get('/auth/token', (_req, res) => {
     // In production, this should verify the request comes from Electron
     res.json({ token: AUTH_TOKEN });
+  });
+
+  // LLM config endpoint — check/update provider
+  app_server.get('/config/llm', authMiddleware, (_req, res) => {
+    res.json({ provider: llmState.provider });
+  });
+
+  app_server.post('/config/llm', authMiddleware, (req, res) => {
+    const { provider, apiKey, model } = req.body;
+    if (!provider) {
+      res.status(400).json({ error: 'Missing provider' });
+      return;
+    }
+    try {
+      llmState.adapter = createLLMAdapter({ provider, apiKey, model });
+      llmState.provider = provider;
+      res.json({ ok: true, provider });
+    } catch (err) {
+      res.status(400).json({ error: String(err) });
+    }
   });
 
   // Protect all /sessions routes
@@ -179,7 +159,19 @@ export async function startServer(): Promise<{ port: number; authToken: string }
       return;
     }
 
-    const llm = new StubLLMAdapter();
+    // Use API key from request body if provided, otherwise use auto-detected default
+    let llm = llmState.adapter;
+    if (driver.llm?.provider && driver.llm?.apiKey) {
+      try {
+        llm = createLLMAdapter({
+          provider: driver.llm.provider as LLMProvider,
+          apiKey: driver.llm.apiKey,
+          model: driver.llm.model,
+        });
+      } catch {
+        // fall back to default
+      }
+    }
     const session = new SessionManager(
       {
         repoPath,
