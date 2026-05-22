@@ -14,6 +14,10 @@ const LANE_PROMPTS: Record<ShadowLane, string> = {
 export class ShadowLanes {
   private llm: LLMAdapter;
   private observations: Map<ShadowLane, LaneObservation> = new Map();
+  // Tracks which lanes are currently running an LLM call
+  private inFlight: Set<ShadowLane> = new Set();
+  // External listener for observation changes (e.g. to broadcast events)
+  private onUpdate: ((obs: LaneObservation) => void) | null = null;
 
   constructor(llm: LLMAdapter) {
     this.llm = llm;
@@ -29,7 +33,20 @@ export class ShadowLanes {
     }
   }
 
+  setUpdateListener(fn: (obs: LaneObservation) => void): void {
+    this.onUpdate = fn;
+  }
+
   async observe(lane: ShadowLane, packet: MissionPacket): Promise<LaneObservation> {
+    // Mark as in-flight immediately so callers can show a spinner
+    this.inFlight.add(lane);
+    const observing: LaneObservation = {
+      ...this.observations.get(lane)!,
+      status: 'observing',
+    };
+    this.observations.set(lane, observing);
+    this.onUpdate?.(observing);
+
     const prompt = LANE_PROMPTS[lane];
     const packetSummary = this.buildLaneContext(lane, packet);
 
@@ -50,9 +67,16 @@ export class ShadowLanes {
       };
 
       this.observations.set(lane, observation);
+      this.onUpdate?.(observation);
       return observation;
     } catch {
-      return this.observations.get(lane)!;
+      // Revert to previous state on error
+      const prev = { ...this.observations.get(lane)!, status: 'idle' as const };
+      this.observations.set(lane, prev);
+      this.onUpdate?.(prev);
+      return prev;
+    } finally {
+      this.inFlight.delete(lane);
     }
   }
 
@@ -64,6 +88,14 @@ export class ShadowLanes {
 
   getObservations(): LaneObservation[] {
     return Array.from(this.observations.values());
+  }
+
+  isInFlight(lane: ShadowLane): boolean {
+    return this.inFlight.has(lane);
+  }
+
+  anyInFlight(): boolean {
+    return this.inFlight.size > 0;
   }
 
   private buildLaneContext(lane: ShadowLane, packet: MissionPacket): string {

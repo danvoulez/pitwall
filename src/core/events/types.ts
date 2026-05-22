@@ -93,6 +93,17 @@ export type MissionStateEvent = {
   status: 'starting' | 'running' | 'paused' | 'completed' | 'failed';
 };
 
+export type LaneUpdateEvent = {
+  type: 'lane.update';
+  id: string;
+  sessionId: string;
+  timestamp: string;
+  lane: string;
+  status: 'idle' | 'observing' | 'warning' | 'blocked';
+  summary: string;
+  confidence: string;
+};
+
 export type PitwallEvent =
   | PtyOutputEvent
   | PtyInputEvent
@@ -103,4 +114,5 @@ export type PitwallEvent =
   | ClaimDetectedEvent
   | RiskDetectedEvent
   | EngineerMessageEvent
-  | MissionStateEvent;
+  | MissionStateEvent
+  | LaneUpdateEvent;

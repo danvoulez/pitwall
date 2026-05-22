@@ -64,6 +64,20 @@ export class SessionManager {
     this.raceEngineer = new RaceEngineer(llm);
     this.shadowLanes = new ShadowLanes(llm);
 
+    // Broadcast lane state changes (including in-flight 'observing') as events
+    this.shadowLanes.setUpdateListener((obs) => {
+      this.recordEvent({
+        type: 'lane.update',
+        id: uuid(),
+        sessionId: this.id,
+        timestamp: new Date().toISOString(),
+        lane: obs.lane,
+        status: obs.status,
+        summary: obs.summary,
+        confidence: obs.confidence,
+      });
+    });
+
     this.wireEvents();
   }
 

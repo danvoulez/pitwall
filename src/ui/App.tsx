@@ -148,7 +148,11 @@ export const App: React.FC = () => {
           <Timeline events={events} />
         </div>
         <div style={styles.fleetStrip}>
-          <FleetLanes observations={state?.laneObservations || []} onRefresh={updateLanes} />
+          <FleetLanes
+            observations={state?.laneObservations || []}
+            onRefresh={updateLanes}
+            onEvent={onEvent}
+          />
         </div>
       </div>
     </div>
