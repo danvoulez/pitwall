@@ -17,11 +17,13 @@
     "start": "electron ."
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
     "better-sqlite3": "^11.7.0",
     "chokidar": "^4.0.3",
     "electron-is-dev": "^2.0.0",
     "express": "^4.21.0",
     "node-pty": "^1.0.0",
+    "openai": "^6.39.0",
     "simple-git": "^3.27.0",
     "uuid": "^11.0.0",
     "ws": "^8.18.0"
